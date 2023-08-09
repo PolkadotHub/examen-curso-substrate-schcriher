@@ -24,6 +24,12 @@ pub mod pallet {
 	use frame_support::{pallet_prelude::*, Blake2_128Concat};
 	use frame_system::pallet_prelude::*;
 
+	use frame_support::{
+		sp_runtime::traits::{AccountIdConversion, Zero},
+		traits::ExistenceRequirement::KeepAlive,
+		PalletId,
+	};
+
 	#[pallet::pallet]
 	pub struct Pallet<T>(_);
 
@@ -40,6 +46,9 @@ pub mod pallet {
 		type LargoMaximoNombreProyecto: Get<u32>;
 
 		type Currency: Currency<Self::AccountId>; // Pueden no utilizarlo.
+
+		#[pallet::constant]
+		type PalletId: Get<PalletId>;
 	}
 
 	#[pallet::storage]
@@ -61,23 +70,81 @@ pub mod pallet {
 		FondosInsuficientes,
 		/// El usuario quiso apoyar un proyecto inexistente.
 		ProyectoNoExiste,
+		/// El usuario quiso registrar un proyecto ya existente.
+		ProyectoYaExiste,
+		/// La cantidad aportada debe ser mayor a cero.
+		CantidadDebeSerMayorACero,
 	}
 
 	#[pallet::call]
 	impl<T: Config> Pallet<T> {
 		/// Crea un proyecto.
 		pub fn crear_proyecto(origen: OriginFor<T>, nombre: String) -> DispatchResult {
-			// Completar este método.
-			todo!()
+			let quien = ensure_signed(origen)?;
+
+			ensure!(
+				nombre.len() >= T::LargoMinimoNombreProyecto::get() as usize,
+				Error::<T>::NombreMuyCorto
+			);
+			ensure!(
+				nombre.len() <= T::LargoMaximoNombreProyecto::get() as usize,
+				Error::<T>::NombreMuyLargo
+			);
+			// unwrap no fallará porque antes se comprueba la longitud máxima del nombre
+			let nombre: NombreProyecto<T> = nombre.try_into().unwrap();
+
+			ensure!(!Proyectos::<T>::contains_key(&nombre), Error::<T>::ProyectoYaExiste);
+
+			Proyectos::<T>::set(&nombre, Zero::zero());
+
+			// TODO
+			// Debería almacenarse quien es el propietario de cada proyecto
+			// para luego transferir los fondos acumulados en la cuenta del pallet
+			// debiendo existir otro extrinsic para este efecto.
+			//
+			// Se considera que la cuenta del Pallet contiene al menos la cantidad
+			// mínima para subsistir (ExistentialDeposit), dado que no hay un mínimo
+			// para apoyar un proyecto, el primer apoyo fallará si es menor al
+			// ExistentialDeposit. Y si estaría implementado el mecanismo de extracción
+			// de los fondos, el último fondo extraído dejaría sin fondo al Pallet y
+			// fallaría (con KeepAlive) o se eliminaría la cuenta.
+
+			Self::deposit_event(Event::ProyectoCreado { quien, nombre });
+
+			Ok(())
 		}
 
+		/// Apoya un proyecto.
 		pub fn apoyar_proyecto(
 			origen: OriginFor<T>,
 			nombre: String,
 			cantidad: BalanceDe<T>,
 		) -> DispatchResult {
-			// Completar este método.
-			todo!()
+			let quien = ensure_signed(origen)?;
+
+			// Es necesario comprobar la longitud máxima porque sino fallará el unwrap,
+			// se falla con ProyectoNoExiste porque el que apoya no necesita saber
+			// las condiciones de longitud del nombre, en la mayoría de los casos
+			// tendrá el nombre correcto al cual quiere apoyar.
+			ensure!(
+				nombre.len() <= T::LargoMaximoNombreProyecto::get() as usize,
+				Error::<T>::ProyectoNoExiste
+			);
+			let nombre: NombreProyecto<T> = nombre.try_into().unwrap();
+			ensure!(Proyectos::<T>::contains_key(&nombre), Error::<T>::ProyectoNoExiste);
+
+			ensure!(cantidad > Zero::zero(), Error::<T>::CantidadDebeSerMayorACero);
+
+			let tesoro = T::PalletId::get().into_account_truncating();
+			let result = T::Currency::transfer(&quien, &tesoro, cantidad, KeepAlive);
+			ensure!(result.is_ok(), Error::<T>::FondosInsuficientes);
+
+			let balance = Proyectos::<T>::get(&nombre);
+			Proyectos::<T>::set(&nombre, balance + cantidad);
+
+			Self::deposit_event(Event::ProyectoApoyado { nombre, cantidad });
+
+			Ok(())
 		}
 	}
 }
